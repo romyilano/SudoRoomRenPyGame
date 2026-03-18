@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Oakland Town – SudoRoom RPG</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #1a1a2e;
+      font-family: 'Georgia', serif;
+      color: #f0e6ff;
+    }
+
+    #game-canvas {
+      display: block;
+      cursor: default;
+    }
+
+    /* ── HUD overlay ─────────────────────────────────────────── */
+    #hud {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: linear-gradient(180deg, rgba(10,0,16,0.88) 0%, transparent 100%);
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    #hud-title {
+      font-size: 1.1rem;
+      letter-spacing: 0.12em;
+      text-shadow: 0 0 12px #b57bee;
+      color: #e0c8ff;
+    }
+
+    #hud-location {
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      color: #a08fcc;
+      text-shadow: 0 0 8px #7b4faa;
+    }
+
+    #hud-controls {
+      font-size: 0.72rem;
+      color: #9978bb;
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Back button ─────────────────────────────────────────── */
+    #back-btn {
+      position: fixed;
+      bottom: 18px;
+      left: 18px;
+      padding: 0.5em 1.5em;
+      font-size: 0.85rem;
+      font-family: 'Georgia', serif;
+      letter-spacing: 0.1em;
+      color: #e0c8ff;
+      background: linear-gradient(135deg, #3b1a7a 0%, #6b2fa0 100%);
+      border: 1px solid #9966cc55;
+      border-radius: 999px;
+      cursor: pointer;
+      text-decoration: none;
+      z-index: 30;
+      box-shadow: 0 0 16px #b57bee55;
+      transition: transform 0.15s, box-shadow 0.15s;
+      pointer-events: all;
+    }
+    #back-btn:hover {
+      transform: scale(1.06) translateY(-2px);
+      box-shadow: 0 0 28px #d44fff;
+    }
+
+    /* ── Location popup ──────────────────────────────────────── */
+    #location-popup {
+      position: fixed;
+      bottom: 70px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 0.45em 1.4em;
+      font-size: 0.85rem;
+      letter-spacing: 0.1em;
+      color: #fff;
+      background: rgba(10, 0, 30, 0.82);
+      border: 1px solid #9966cc66;
+      border-radius: 8px;
+      z-index: 25;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s;
+      text-align: center;
+      white-space: nowrap;
+    }
+    #location-popup.show { opacity: 1; }
+
+    /* ── Mini-map ────────────────────────────────────────────── */
+    #minimap {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      width: 140px;
+      height: 110px;
+      border: 1px solid #9966cc55;
+      border-radius: 6px;
+      background: rgba(10, 0, 20, 0.78);
+      z-index: 30;
+      overflow: hidden;
+    }
+    #minimap canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+
+<!-- HUD bar -->
+<div id="hud">
+  <span id="hud-title">🐱 Oakland Town</span>
+  <span id="hud-location">Near SudoRoom · Shattuck Ave</span>
+  <span id="hud-controls">WASD to move</span>
+</div>
+
+<!-- Main isometric canvas -->
+<canvas id="game-canvas"></canvas>
+
+<!-- Location name popup -->
+<div id="location-popup"></div>
+
+<!-- Mini-map -->
+<div id="minimap"><canvas id="minimap-canvas"></canvas></div>
+
+<!-- Back to title -->
+<a id="back-btn" href="index.html">← Title Screen</a>
+
+<script>
+'use strict';
+
+/* ═══════════════════════════════════════════════════════════════
+   CONSTANTS & TILE DEFINITIONS
+═══════════════════════════════════════════════════════════════ */
+const TILE_W   = 64;   // diamond width
+const TILE_H   = 32;   // diamond height
+const MAP_COLS = 22;
+const MAP_ROWS = 18;
+
+// Tile IDs
+const T = {
+  GRASS:        0,
+  ROAD:         1,
+  BUILDING:     2,
+  SUDOROOM:     3,
+  TREE:         4,
+  PARK:         5,
+  VACANT:       6,
+  CAFE:         7,
+  INTERSECTION: 8,
+};
+
+// Tile walkability (true = cat can walk here)
+const WALKABLE = {
+  [T.GRASS]:        true,
+  [T.ROAD]:         true,
+  [T.BUILDING]:     false,
+  [T.SUDOROOM]:     false,
+  [T.TREE]:         false,
+  [T.PARK]:         true,
+  [T.VACANT]:       true,
+  [T.CAFE]:         false,
+  [T.INTERSECTION]: true,
+};
+
+// Named locations on the map [col, row, label]
+const LOCATIONS = [
+  [0,  7,  'SudoRoom'],
+  [7,  0,  'Temescal'],
+  [7,  5,  'Shattuck & 51st'],
+  [7,  11, 'Shattuck & 48th'],
+  [9,  2,  'Temescal Shops'],
+  [15, 1,  'Temescal Café Row'],
+  [11, 7,  'Shattuck Ave'],
+  [3,  13, 'Local Building'],
+  [11, 13, 'Mixed Use'],
+];
+
+/* ═══════════════════════════════════════════════════════════════
+   MAP DATA
+   Layout key:
+   0=grass  1=road  2=building  3=SudoRoom  4=tree
+   5=park   6=vacant  7=café  8=intersection
+   ──────────────────────────────────────────────────────────────
+   Shattuck Ave  : cols 7-8  (N→S)
+   51st Street   : row 5     (E→W)
+   48th Street   : row 11    (E→W)
+   SudoRoom      : rows 7-9, cols 0-1  (middle-left)
+   Temescal area : rows 0-4
+═══════════════════════════════════════════════════════════════ */
+const MAP = [
+//  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21
+  [ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4], // row  0
+  [ 4, 2, 2, 2, 2, 5, 5, 1, 1, 2, 2, 2, 2, 2, 5, 5, 7, 7, 7, 2, 2, 4], // row  1  ← Temescal
+  [ 4, 2, 2, 2, 2, 5, 5, 1, 1, 2, 2, 2, 2, 2, 5, 5, 7, 7, 7, 2, 2, 4], // row  2
+  [ 4, 0, 0, 0, 0, 5, 5, 1, 1, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, 4], // row  3
+  [ 4, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4], // row  4
+  [ 1, 1, 1, 1, 1, 1, 1, 8, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // row  5  ← 51st St
+  [ 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // row  6
+  [ 3, 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0], // row  7  ← SudoRoom
+  [ 3, 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0], // row  8
+  [ 3, 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // row  9
+  [ 0, 0, 0, 0, 5, 5, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 0], // row 10
+  [ 1, 1, 1, 1, 1, 1, 1, 8, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // row 11  ← 48th St
+  [ 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // row 12
+  [ 0, 0, 2, 2, 0, 0, 0, 1, 1, 0, 0, 2, 2, 2, 0, 0, 2, 2, 2, 0, 0, 0], // row 13
+  [ 0, 0, 2, 2, 0, 0, 0, 1, 1, 0, 0, 2, 2, 2, 0, 0, 2, 2, 2, 0, 0, 0], // row 14
+  [ 4, 0, 0, 0, 0, 5, 5, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 4], // row 15
+  [ 4, 0, 0, 0, 0, 5, 5, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 4], // row 16
+  [ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4], // row 17
+];
+
+/* ═══════════════════════════════════════════════════════════════
+   CANVAS SETUP
+═══════════════════════════════════════════════════════════════ */
+const canvas  = document.getElementById('game-canvas');
+const ctx     = canvas.getContext('2d');
+const mmCanvas = document.getElementById('minimap-canvas');
+const mmCtx   = mmCanvas.getContext('2d');
+
+let W, H;
+
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  mmCanvas.width  = 140;
+  mmCanvas.height = 110;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ═══════════════════════════════════════════════════════════════
+   ISOMETRIC HELPERS
+═══════════════════════════════════════════════════════════════ */
+function tileToScreen(col, row, camX, camY) {
+  return {
+    x: (col - row) * (TILE_W / 2) + camX,
+    y: (col + row) * (TILE_H / 2) + camY,
+  };
+}
+
+/** Draw a flat isometric diamond tile */
+function drawTile(col, row, camX, camY, fillColor, strokeColor) {
+  const { x, y } = tileToScreen(col, row, camX, camY);
+  const hw = TILE_W / 2, hh = TILE_H / 2;
+  ctx.beginPath();
+  ctx.moveTo(x,      y);       // top
+  ctx.lineTo(x + hw, y + hh);  // right
+  ctx.lineTo(x,      y + TILE_H); // bottom
+  ctx.lineTo(x - hw, y + hh);  // left
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor || 'rgba(0,0,0,0.18)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+/**
+ * Draw an isometric box (building) on top of a tile.
+ * buildH: visual height in screen pixels
+ */
+function drawBox(col, row, camX, camY, topColor, leftColor, rightColor, buildH) {
+  const { x, y } = tileToScreen(col, row, camX, camY);
+  const hw = TILE_W / 2, hh = TILE_H / 2;
+  const h  = buildH;
+
+  // Right face (SE wall)
+  ctx.beginPath();
+  ctx.moveTo(x + hw, y + hh);
+  ctx.lineTo(x,      y + TILE_H);
+  ctx.lineTo(x,      y + TILE_H - h);
+  ctx.lineTo(x + hw, y + hh - h);
+  ctx.closePath();
+  ctx.fillStyle = rightColor;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Left face (SW wall)
+  ctx.beginPath();
+  ctx.moveTo(x - hw, y + hh);
+  ctx.lineTo(x,      y + TILE_H);
+  ctx.lineTo(x,      y + TILE_H - h);
+  ctx.lineTo(x - hw, y + hh - h);
+  ctx.closePath();
+  ctx.fillStyle = leftColor;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Top face (roof)
+  ctx.beginPath();
+  ctx.moveTo(x,      y - h);
+  ctx.lineTo(x + hw, y + hh - h);
+  ctx.lineTo(x,      y + TILE_H - h);
+  ctx.lineTo(x - hw, y + hh - h);
+  ctx.closePath();
+  ctx.fillStyle = topColor;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+/** Draw a tree on top of a tile */
+function drawTree(col, row, camX, camY) {
+  const { x, y } = tileToScreen(col, row, camX, camY);
+  const cx = x, baseY = y + TILE_H * 0.5;
+
+  // Trunk
+  ctx.fillStyle = '#6b4226';
+  ctx.fillRect(cx - 3, baseY - 10, 6, 14);
+
+  // Foliage (3-circle cluster)
+  ctx.fillStyle = '#2d6e2d';
+  ctx.beginPath(); ctx.arc(cx,     baseY - 24, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#38853a';
+  ctx.beginPath(); ctx.arc(cx - 8, baseY - 20, 9,  0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + 7, baseY - 20, 9,  0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#4aa04c';
+  ctx.beginPath(); ctx.arc(cx,     baseY - 30, 8,  0, Math.PI * 2); ctx.fill();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TILE RENDER STYLES
+═══════════════════════════════════════════════════════════════ */
+const TILE_COLORS = {
+  [T.GRASS]:        { top: '#4e8c3a' },
+  [T.ROAD]:         { top: '#4a4a4a' },
+  [T.INTERSECTION]: { top: '#525252' },
+  [T.PARK]:         { top: '#5fa84a' },
+  [T.VACANT]:       { top: '#8a7d62' },
+};
+
+const BUILDING_STYLES = {
+  [T.BUILDING]: { top: '#c4a882', left: '#8a7155', right: '#a8895e', h: 28 },
+  [T.SUDOROOM]: { top: '#c084f0', left: '#6b2fa0', right: '#8840c8', h: 38 },
+  [T.TREE]:     null, // handled separately
+  [T.CAFE]:     { top: '#f0c080', left: '#c08040', right: '#d4924a', h: 24 },
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   CAT CHARACTER
+═══════════════════════════════════════════════════════════════ */
+const cat = {
+  col:   3,           // current tile column
+  row:   8,           // current tile row (near SudoRoom)
+  px:    0,           // pixel x (for smooth movement)
+  py:    0,           // pixel y
+  facing: 'right',   // 'left' or 'right'
+  moving: false,
+  moveProgress: 0,
+  fromPx: 0, fromPy: 0,
+  toPx:   0, toPy:   0,
+  MOVE_SPEED: 0.14,   // progress per frame (0→1)
+
+  // Wander AI state (used when player is idle)
+  wanderTimer: 0,
+  wanderCooldown: 90, // frames between wander steps
+};
+
+// Sprite images
+const sprites = {
+  catLeft:  new Image(),
+  catRight: new Image(),
+};
+sprites.catLeft.src  = 'game/images/characters/sudocat/sudocat-normal.png';
+sprites.catRight.src = 'game/images/characters/sudocat/sudocat-rightfacing-normal.png';
+
+let imagesLoaded = 0;
+sprites.catLeft.onload  = sprites.catRight.onload = () => { imagesLoaded++; };
+
+/* ═══════════════════════════════════════════════════════════════
+   INPUT
+═══════════════════════════════════════════════════════════════ */
+const keys = {};
+document.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true;  });
+document.addEventListener('keyup',   e => { keys[e.key.toLowerCase()] = false; });
+
+function playerIsPressingMove() {
+  return keys['w'] || keys['a'] || keys['s'] || keys['d'];
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CAT MOVEMENT
+═══════════════════════════════════════════════════════════════ */
+function isWalkable(col, row) {
+  if (col < 0 || col >= MAP_COLS || row < 0 || row >= MAP_ROWS) return false;
+  return !!WALKABLE[MAP[row][col]];
+}
+
+function startCatMove(dc, dr) {
+  const nc = cat.col + dc;
+  const nr = cat.row + dr;
+  if (!isWalkable(nc, nr)) return false;
+
+  // Determine facing based on screen-space movement direction
+  // dc > 0 → moving right on screen (NE), dc < 0 → moving left (SW)
+  // dr > 0 → moving down-right (SE),  dr < 0 → moving up-left (NW)
+  if (dc > 0) cat.facing = 'right';
+  if (dc < 0) cat.facing = 'left';
+
+  // Store pixel positions for smooth interpolation
+  const curScreen = tileToScreen(cat.col, cat.row, 0, 0);
+  const newScreen = tileToScreen(nc, nr, 0, 0);
+  cat.fromPx = curScreen.x;
+  cat.fromPy = curScreen.y;
+  cat.toPx   = newScreen.x;
+  cat.toPy   = newScreen.y;
+
+  cat.col = nc;
+  cat.row = nr;
+  cat.moving = true;
+  cat.moveProgress = 0;
+
+  return true;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOCATION POPUP
+═══════════════════════════════════════════════════════════════ */
+const popup     = document.getElementById('location-popup');
+const hudLoc    = document.getElementById('hud-location');
+let popupTimer  = 0;
+let lastLocName = '';
+
+function getNearbyLocation() {
+  let best = null, bestDist = 3;
+  for (const [lc, lr, name] of LOCATIONS) {
+    const dist = Math.abs(cat.col - lc) + Math.abs(cat.row - lr);
+    if (dist < bestDist) { best = name; bestDist = dist; }
+  }
+  return best;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STREET LABEL DEFINITIONS  (screen overlays drawn via canvas)
+   [col, row, text, align]
+═══════════════════════════════════════════════════════════════ */
+const STREET_LABELS = [
+  // Shattuck Ave vertical label (drawn once per visible segment)
+  { col: 7.5, row:  2.5, text: 'Shattuck Ave →', color: '#ffe066' },
+  { col: 7.5, row:  9,   text: 'Shattuck Ave',   color: '#ffe066' },
+  { col: 7.5, row: 15,   text: 'Shattuck Ave',   color: '#ffe066' },
+  // 51st St
+  { col: 1.5, row:  5,   text: '← 51st St →',   color: '#88ddff' },
+  // 48th St
+  { col: 1.5, row: 11,   text: '← 48th St →',   color: '#88ddff' },
+  // Neighbourhood labels
+  { col: 10,  row:  1,   text: '✦ TEMESCAL',      color: '#ffb3e6' },
+  { col:  0,  row:  7,   text: 'SudoRoom',        color: '#d4aaff' },
+];
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW TILE LABEL (small floating text above a tile)
+═══════════════════════════════════════════════════════════════ */
+function drawLabel(col, row, camX, camY, text, color) {
+  const { x, y } = tileToScreen(col, row, camX, camY);
+  ctx.save();
+  ctx.font = 'bold 11px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)';
+  ctx.shadowBlur   = 5;
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(text, x, y - 2);
+  ctx.restore();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW SUDOROOM SIGN
+═══════════════════════════════════════════════════════════════ */
+function drawSudoroomSign(camX, camY) {
+  const col = 0, row = 7;
+  const { x, y } = tileToScreen(col, row, camX, camY);
+  const sx = x + 2, sy = y - 50;
+
+  ctx.save();
+
+  // Sign background
+  const signW = 68, signH = 18;
+  ctx.fillStyle = 'rgba(40, 0, 80, 0.88)';
+  ctx.strokeStyle = '#c084f0';
+  ctx.lineWidth = 1.5;
+  const rx = sx - signW / 2, ry = sy - signH / 2;
+  ctx.beginPath();
+  ctx.roundRect(rx, ry, signW, signH, 4);
+  ctx.fill();
+  ctx.stroke();
+
+  // Sign text
+  ctx.font = 'bold 10px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#e0c8ff';
+  ctx.shadowColor = '#c084f0';
+  ctx.shadowBlur = 6;
+  ctx.fillText('✦ SudoRoom ✦', sx, sy);
+
+  ctx.restore();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW TEMESCAL SIGN
+═══════════════════════════════════════════════════════════════ */
+function drawTemescalSign(camX, camY) {
+  const col = 10, row = 0.5;
+  const { x, y } = tileToScreen(col, row, camX, camY);
+
+  ctx.save();
+  const signW = 90, signH = 18;
+  ctx.fillStyle = 'rgba(20, 0, 50, 0.85)';
+  ctx.strokeStyle = '#ff8fcc';
+  ctx.lineWidth = 1.5;
+  const rx = x - signW / 2, ry = y - signH / 2;
+  ctx.beginPath();
+  ctx.roundRect(rx, ry, signW, signH, 4);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = 'bold 10px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffb3e6';
+  ctx.shadowColor = '#ff8fcc';
+  ctx.shadowBlur = 6;
+  ctx.fillText('✦ TEMESCAL, OAKLAND ✦', x, y);
+
+  ctx.restore();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW THE CAT SPRITE
+═══════════════════════════════════════════════════════════════ */
+function drawCat(camX, camY) {
+  // Interpolated pixel position
+  let ipx, ipy;
+  if (cat.moving) {
+    ipx = cat.fromPx + (cat.toPx - cat.fromPx) * cat.moveProgress;
+    ipy = cat.fromPy + (cat.toPy - cat.fromPy) * cat.moveProgress;
+  } else {
+    const s = tileToScreen(cat.col, cat.row, 0, 0);
+    ipx = s.x; ipy = s.y;
+  }
+
+  const sx = ipx + camX;
+  const sy = ipy + camY;
+
+  const img = cat.facing === 'right' ? sprites.catRight : sprites.catLeft;
+
+  // Cat height relative to tile
+  const catH = 48;
+  const catW = img.width > 0 ? Math.round(catH * (img.width / img.height)) : 48;
+
+  if (imagesLoaded > 0 && img.complete && img.naturalWidth > 0) {
+    ctx.save();
+    ctx.shadowColor = '#c084f0';
+    ctx.shadowBlur  = 12;
+    ctx.drawImage(img, sx - catW / 2, sy + TILE_H * 0.1 - catH, catW, catH);
+    ctx.restore();
+  } else {
+    // Fallback placeholder if sprite not loaded
+    ctx.save();
+    ctx.fillStyle = '#c084f0';
+    ctx.shadowColor = '#c084f0';
+    ctx.shadowBlur = 16;
+    ctx.font = '28px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🐱', sx, sy - catH * 0.4);
+    ctx.restore();
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW MINI-MAP
+═══════════════════════════════════════════════════════════════ */
+function drawMinimap() {
+  const mw = mmCanvas.width, mh = mmCanvas.height;
+  const tw = mw / MAP_COLS, th = mh / MAP_ROWS;
+
+  mmCtx.clearRect(0, 0, mw, mh);
+
+  const MINI_COLORS = {
+    [T.GRASS]:        '#4e8c3a',
+    [T.ROAD]:         '#5a5a5a',
+    [T.BUILDING]:     '#b09070',
+    [T.SUDOROOM]:     '#9940d0',
+    [T.TREE]:         '#2d6e2d',
+    [T.PARK]:         '#5fa84a',
+    [T.VACANT]:       '#8a7d62',
+    [T.CAFE]:         '#d4924a',
+    [T.INTERSECTION]: '#666',
+  };
+
+  for (let r = 0; r < MAP_ROWS; r++) {
+    for (let c = 0; c < MAP_COLS; c++) {
+      mmCtx.fillStyle = MINI_COLORS[MAP[r][c]] || '#333';
+      mmCtx.fillRect(c * tw, r * th, tw, th);
+    }
+  }
+
+  // Cat dot
+  mmCtx.fillStyle = '#ff8fcc';
+  mmCtx.shadowColor = '#ff8fcc';
+  mmCtx.shadowBlur = 6;
+  mmCtx.beginPath();
+  mmCtx.arc(cat.col * tw + tw / 2, cat.row * th + th / 2, 3, 0, Math.PI * 2);
+  mmCtx.fill();
+  mmCtx.shadowBlur = 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GROUND TILE DRAW HELPER (used in pass 1)
+═══════════════════════════════════════════════════════════════ */
+function drawGroundTile(c, r, camX, camY) {
+  const tileType = MAP[r][c];
+  if (tileType === T.ROAD || tileType === T.INTERSECTION) {
+    drawTile(c, r, camX, camY, '#4a4a4a', 'rgba(0,0,0,0.15)');
+    // Dashed centre-line for Shattuck Ave (N-S, cols 7-8)
+    if ((c === 7 || c === 8) && tileType === T.ROAD) {
+      const { x, y } = tileToScreen(c, r, camX, camY);
+      ctx.save();
+      ctx.strokeStyle = '#ffe06644';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.moveTo(x, y + 4);
+      ctx.lineTo(x, y + TILE_H - 4);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+    // Dashed centre-line for E-W streets (rows 5 and 11)
+    if ((r === 5 || r === 11) && tileType === T.ROAD) {
+      const { x, y } = tileToScreen(c, r, camX, camY);
+      ctx.save();
+      ctx.strokeStyle = '#ffe06644';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.moveTo(x - TILE_W / 4, y + TILE_H / 2);
+      ctx.lineTo(x + TILE_W / 4, y + TILE_H / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  } else if (tileType === T.GRASS)   { drawTile(c, r, camX, camY, '#4e8c3a');
+  } else if (tileType === T.PARK)    { drawTile(c, r, camX, camY, '#5fa84a');
+  } else if (tileType === T.VACANT)  { drawTile(c, r, camX, camY, '#8a7d62');
+  } else if (tileType === T.TREE)    { drawTile(c, r, camX, camY, '#4e8c3a');
+  } else {
+    // building footprint
+    drawTile(c, r, camX, camY, '#888870');
+  }
+}
+
+/** Draw the elevated part of a tile (building / tree). No-op for flat tiles. */
+function drawElevatedTile(c, r, camX, camY) {
+  const tileType = MAP[r][c];
+  if (tileType === T.BUILDING) {
+    const s = BUILDING_STYLES[T.BUILDING];
+    drawBox(c, r, camX, camY, s.top, s.left, s.right, s.h);
+  } else if (tileType === T.CAFE) {
+    const s = BUILDING_STYLES[T.CAFE];
+    drawBox(c, r, camX, camY, s.top, s.left, s.right, s.h);
+  } else if (tileType === T.SUDOROOM) {
+    const s = BUILDING_STYLES[T.SUDOROOM];
+    drawBox(c, r, camX, camY, s.top, s.left, s.right, s.h);
+  } else if (tileType === T.TREE) {
+    drawTree(c, r, camX, camY);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN RENDER  (two-pass painter's algorithm)
+   Pass 1 – all flat ground tiles (no depth order needed)
+   Pass 2 – elevated objects + cat in correct diagonal depth order
+═══════════════════════════════════════════════════════════════ */
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background gradient (sky)
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0e0025');
+  grad.addColorStop(1, '#1a1a2e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Camera: keep cat centred on screen
+  const catScreen = tileToScreen(cat.col, cat.row, 0, 0);
+  const catVisX = cat.moving
+    ? cat.fromPx + (cat.toPx - cat.fromPx) * cat.moveProgress
+    : catScreen.x;
+  const catVisY = cat.moving
+    ? cat.fromPy + (cat.toPy - cat.fromPy) * cat.moveProgress
+    : catScreen.y;
+
+  const camX = W / 2 - catVisX - TILE_W / 2;
+  const camY = H / 2 - catVisY - TILE_H / 2;
+
+  // ── PASS 1: flat ground (order doesn't matter) ─────────────
+  for (let r = 0; r < MAP_ROWS; r++) {
+    for (let c = 0; c < MAP_COLS; c++) {
+      drawGroundTile(c, r, camX, camY);
+    }
+  }
+
+  // ── PASS 2: elevated objects + cat, sorted by depth ────────
+  // Depth key = col + row  (higher = closer to the camera / further SE)
+  // We iterate diagonals from depth 0 to the maximum depth.
+  const catDepth = cat.col + cat.row;
+  const maxDepth = MAP_COLS + MAP_ROWS - 2;
+  let catDrawn = false;
+
+  for (let depth = 0; depth <= maxDepth; depth++) {
+    // Iterate all tiles on this diagonal
+    const rMin = Math.max(0, depth - (MAP_COLS - 1));
+    const rMax = Math.min(depth, MAP_ROWS - 1);
+    for (let r = rMin; r <= rMax; r++) {
+      const c = depth - r;
+      if (c < 0 || c >= MAP_COLS) continue;
+      drawElevatedTile(c, r, camX, camY);
+    }
+
+    // Draw cat after all tiles at its depth level
+    if (!catDrawn && depth >= catDepth) {
+      drawCat(camX, camY);
+      catDrawn = true;
+    }
+  }
+  if (!catDrawn) drawCat(camX, camY);
+
+  // ── Overlay: signs, labels, minimap ───────────────────────
+  drawSudoroomSign(camX, camY);
+  drawTemescalSign(camX, camY);
+
+  for (const lbl of STREET_LABELS) {
+    drawLabel(lbl.col, lbl.row, camX, camY, lbl.text, lbl.color);
+  }
+
+  drawMinimap();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UPDATE LOOP
+═══════════════════════════════════════════════════════════════ */
+const WANDER_DIRS = [
+  {dc:  0, dr: -1},  // N
+  {dc:  1, dr:  0},  // E
+  {dc:  0, dr:  1},  // S
+  {dc: -1, dr:  0},  // W
+];
+
+function update() {
+  // Finish in-progress move
+  if (cat.moving) {
+    cat.moveProgress += cat.MOVE_SPEED;
+    if (cat.moveProgress >= 1) {
+      cat.moveProgress = 1;
+      cat.moving = false;
+    }
+    return; // don't process new input while moving
+  }
+
+  // Player input (WASD)
+  let moved = false;
+  if (keys['w']) { moved = startCatMove( 0, -1); }
+  else if (keys['s']) { moved = startCatMove( 0,  1); }
+  else if (keys['a']) { moved = startCatMove(-1,  0); }
+  else if (keys['d']) { moved = startCatMove( 1,  0); }
+
+  // Wander AI when player isn't pressing anything
+  if (!moved) {
+    cat.wanderTimer++;
+    if (cat.wanderTimer >= cat.wanderCooldown) {
+      cat.wanderTimer = 0;
+      cat.wanderCooldown = 60 + Math.floor(Math.random() * 120);
+      const dir = WANDER_DIRS[Math.floor(Math.random() * WANDER_DIRS.length)];
+      startCatMove(dir.dc, dir.dr);
+    }
+  } else {
+    cat.wanderTimer = 0;
+  }
+
+  // Location name popup
+  const locName = getNearbyLocation();
+  if (locName && locName !== lastLocName) {
+    lastLocName = locName;
+    popup.textContent = '📍 ' + locName;
+    popup.classList.add('show');
+    hudLoc.textContent = locName + ' · Oakland';
+    clearTimeout(popupTimer);
+    popupTimer = setTimeout(() => popup.classList.remove('show'), 3000);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GAME LOOP
+═══════════════════════════════════════════════════════════════ */
+// Init cat pixel position
+(function initCat() {
+  const s = tileToScreen(cat.col, cat.row, 0, 0);
+  cat.px = s.x; cat.py = s.y;
+}());
+
+function loop() {
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
